@@ -375,6 +375,8 @@
 <div class="container" id="app-container">
 <!-- El contenido se generará dinámicamente -->
 </div>
+<!-- Iframe oculto para envío por formulario (evita CORS con Google Apps Script) -->
+<iframe name="battelle-submit-iframe" id="battelle-submit-iframe" style="display:none; width:0; height:0; border:0;" title="Envío de datos"></iframe>
 
 <!-- =========================
      STEP 0 + CONFIG (editable)
@@ -988,10 +990,17 @@
             btn.disabled = true;
             btn.innerHTML = '<span class="loading"></span> Enviando...';
 
-            try {
-                const payload = buildPayload();
-                console.log('[Battelle Profesores] Payload:', payload);
+            const payload = buildPayload();
+            console.log('[Battelle Profesores] Payload:', payload);
 
+            // Envío por formulario a iframe para evitar CORS con Google Apps Script
+            const isGoogleAppsScript = submitUrl && submitUrl.indexOf('script.google.com') !== -1;
+            if (isGoogleAppsScript) {
+                submitViaFormToIframe(payload, btn);
+                return;
+            }
+
+            try {
                 const response = await fetch(submitUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -1026,6 +1035,51 @@
                 btn.disabled = false;
                 btn.textContent = 'Enviar Evaluación';
             }
+        }
+
+        function submitViaFormToIframe(payload, btn) {
+            const form = document.createElement('form');
+            form.setAttribute('method', 'POST');
+            form.setAttribute('action', submitUrl);
+            form.setAttribute('target', 'battelle-submit-iframe');
+            form.style.display = 'none';
+
+            const input = document.createElement('input');
+            input.setAttribute('name', 'payload');
+            input.setAttribute('type', 'hidden');
+            input.setAttribute('value', JSON.stringify(payload));
+            form.appendChild(input);
+
+            document.body.appendChild(form);
+            form.submit();
+            form.remove();
+
+            const timeoutMs = 15000;
+            const timeoutId = setTimeout(function() {
+                window.removeEventListener('message', onMessage);
+                console.warn('[Battelle Profesores] Timeout esperando confirmación del servidor');
+                alert('No se pudo confirmar el envío. Comprueba que el script de Google esté desplegado correctamente y que devuelva la página de confirmación.');
+                btn.disabled = false;
+                btn.textContent = 'Enviar Evaluación';
+            }, timeoutMs);
+
+            function onMessage(ev) {
+                if (ev.data && ev.data.type === 'EMOOTI_SUBMIT_SUCCESS') {
+                    clearTimeout(timeoutId);
+                    window.removeEventListener('message', onMessage);
+                    showSuccess();
+                    if (window.parent !== window) {
+                        window.parent.postMessage({ type: 'EMOOTI_SUBMIT_SUCCESS' }, '*');
+                    }
+                } else if (ev.data && ev.data.type === 'EMOOTI_SUBMIT_ERROR') {
+                    clearTimeout(timeoutId);
+                    window.removeEventListener('message', onMessage);
+                    alert('Error al enviar la evaluación: ' + (ev.data.message || 'Error desconocido'));
+                    btn.disabled = false;
+                    btn.textContent = 'Enviar Evaluación';
+                }
+            }
+            window.addEventListener('message', onMessage);
         }
 
         function showSuccess() {
